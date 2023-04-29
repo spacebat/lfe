@@ -94,7 +94,7 @@ head(Pats, St0) ->
             St2 = new_binding(S, '$_', St1),
             head_pattern(Pat, St2);
         [Pat] -> head_pattern(Pat, St1);
-        _ -> throw({error,match_spec_head})     %Wrong size
+        _ -> throw({error,{match_spec_head,Pats}})     %Wrong size
     end.
 
 %% head_pattern(Pattern, State) -> {Pattern,State}.
@@ -108,6 +108,8 @@ check_head(Pat, _) when is_atom(Pat) -> ok;     %Variable
 check_head(Pat, table) when is_tuple(Pat) -> ok;
 check_head(?Q(Pat), table) when is_tuple(Pat) -> ok;
 check_head([tuple|_], table) -> ok;
+check_head(['record'|_], table) -> ok;
+%% make-record has been deprecated but we sill accept it for now.
 check_head(['make-record'|_], table) -> ok;
 check_head(?Q(Pat), trace) when is_list(Pat) -> ok;
 check_head([list|_], trace) -> ok;
@@ -137,10 +139,13 @@ pattern(['=',L0,R0], St0) ->                    %General aliasing
     {L1,St1} = pattern(L0, St0),
     {R1,St2} = pattern(R0, St1),
     {['=',L1,R1],St2};
-pattern(['make-record',R|Fs0], St0) ->
+pattern(['record',R|Fs0], St0) ->
     %% This is in a term but is going to be used as a pattern!
     {Fs1,St1} = pat_rec_fields(Fs0, St0),
-    {['make-record',R|Fs1],St1};
+    {['record',R|Fs1],St1};
+%% make-record has been deprecated but we sill accept it for now.
+pattern(['make-record',R|Fs], St) ->
+    pattern(['record',R|Fs], St);
 pattern(['record-index',R,F], St) ->
     {['record-index',R,F],St};
 %% Support old no constructor style list forms.
@@ -153,18 +158,27 @@ pattern(E, St) -> {E,St}.                       %Atomic
 pat_list(Ps, St) -> mapfoldl(fun pattern/2, St, Ps).
 
 %% pat_rec_fields(Fields, State) -> {Patterns,State}.
+%% pat_rec_fields(Fields, DefValue, State) -> {Patterns,State}.
+%%  Expand the record pattern fields adding a _ = '_' to set default
+%%  value for fields.
 
-pat_rec_fields([F,P0|Fs0], St0) when is_atom(F) ->
+pat_rec_fields(Fs, St) ->
+    pat_rec_fields(Fs, ?Q('_'), St).
+
+pat_rec_fields(['_',P|Fs], _DefV, St) ->
+    pat_rec_fields(Fs, P, St);
+pat_rec_fields([F,P0|Fs0], DefV, St0) when is_atom(F) ->
     %% Field names go straight through untouched.
     {P1,St1} = pattern(P0, St0),
-    {Fs1,St2} = pat_rec_fields(Fs0, St1),
+    {Fs1,St2} = pat_rec_fields(Fs0, DefV, St1),
     {[F,P1|Fs1],St2};
-pat_rec_fields([F0,P0|Fs0], St0) ->
+pat_rec_fields([F0,P0|Fs0], DefV, St0) ->
     {F1,St1} = pattern(F0, St0),
     {P1,St2} = pattern(P0, St1),
-    {Fs1,St3} = pat_rec_fields(Fs0, St2),
+    {Fs1,St3} = pat_rec_fields(Fs0, DefV, St2),
     {[F1,P1|Fs1],St3};
-pat_rec_fields([], St) -> {[],St}.
+pat_rec_fields([], DefV, St) ->
+    {['_',DefV],St}.
 
 %% pat_binding(Var, Status) -> {DVar,Status}.
 %%  Get dollar var for variable, creating a new one if neccessary.
@@ -227,10 +241,18 @@ expr([binary|Segs0], St0) ->
     {Segs1,St1} = expr_bitsegs(Segs0, St0),
     {[binary|Segs1],St1};
 %% Record special forms.
-expr(['make-record',Name|Fs], St0) ->
+expr(['record',Name|Fs], St0) ->
     %% This is in a term and is going to be used as an expression!
     {Efs,St1} = expr_rec_fields(Fs, St0),
-    {[tuple,['make-record',Name|Efs]],St1};     %Must tuple tuples
+    {[tuple,['record',Name|Efs]],St1};          %Must tuple tuples
+%% make-record has been deprecated but we sill accept it for now.
+expr(['make-record',Name|Fs], St) ->
+    expr(['record',Name|Fs], St);
+expr(['is-record',E,Name], St0) ->
+    {Ee,St1} = expr(E, St0),
+    %% io:format(user, "is-record ~p ~p\n", [E,Name]),
+    {[tuple,?Q('is_record'),Ee,?Q(Name)],St1};
+    %% {[tuple,['is-record',Ee,Name]],St1};
 expr(['record-index',Name,F], St) ->
     {['record-index',Name,F],St};
 expr(['record-field',E,Name,F], St0) ->
